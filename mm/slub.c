@@ -4196,7 +4196,9 @@ static void slab_mem_offline_callback(void *arg)
 			 * and offline_pages() function shouldn't call this
 			 * callback. So, we must fail.
 			 */
-			BUG_ON(slabs_node(s, offline_node));
+
+			BUG_ON(atomic_long_read(&n->nr_slabs));
+
 
 			s->node[offline_node] = NULL;
 			kmem_cache_free(kmem_cache_node, n);
