@@ -465,11 +465,12 @@ static int compat_fillonedir(struct dir_context *ctx, const char *name,
 		container_of(ctx, struct compat_readdir_callback, ctx);
 	struct compat_old_linux_dirent __user *dirent;
 	compat_ulong_t d_ino;
-
-	if (buf->result)
-		return -EINVAL;
+	
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 	struct inode *inode;
+	
+	if (buf->result)
+		return -EINVAL;
 
 	if (buf->sb->s_magic == FUSE_SUPER_MAGIC && susfs_is_fuse_ino_sus_ino(ino)) {
 		return 0;
@@ -561,11 +562,11 @@ static int compat_filldir(struct dir_context *ctx, const char *name, int namlen,
 	int reclen = ALIGN(offsetof(struct compat_linux_dirent, d_name) +
 		namlen + 2, sizeof(compat_long_t));
 
-	buf->error = -EINVAL;	/* only used if we fail.. */
-	if (reclen > buf->count)
-		return -EINVAL;
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 	struct inode *inode;
+	
+	if (reclen > buf->count)
+		return -EINVAL;
 
 	if (buf->sb->s_magic == FUSE_SUPER_MAGIC && susfs_is_fuse_ino_sus_ino(ino)) {
 		return 0;
