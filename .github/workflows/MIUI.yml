@@ -17,8 +17,9 @@ jobs:
     - name: Install Dependencies
       run: |
           sudo apt update
-          sudo apt install -y build-essential libncurses-dev bison flex libssl-dev bc git
-
+          sudo apt install bc cpio flex bison aptitude git python-is-python3 tar perl wget curl lz4 -y
+          sudo aptitude install libssl-dev -y
+          
     - name: Fetch Clang
       run: |  
             mkdir clang && curl  https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz -RLO && tar -C clang/ -xf clang-*.tar.gz
@@ -28,10 +29,7 @@ jobs:
            git clone https://github.com/greenforce-project/gcc-arm64 -b main --depth=1 gcc64
            git clone https://github.com/greenforce-project/gcc-arm -b main --depth=1 gcc32
      
-    - name: Fetch KernelSU-SuSFS
-      run: |
-            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next-susfs-dev
-     
+         
            
     - name: Clean previous build
       run: |
@@ -49,7 +47,7 @@ jobs:
            export KBUILD_BUILD_USER=buildkernel1
            export KBUILD_BUILD_HOST=mhddonip
            export KBUILD_COMPILER_STRING="${PWD}/clang"
-           make O=out sweet_defconfig 
+           make O=out ARCH=arm64 vendor/sweet_defconfig  
            make -j$(nproc --all) O=out \ ARCH=arm64 \ LLVM=1 \ LLVM_IAS=1 \ CLANG_TRIPLE=aarch64-linux-gnu- \ CROSS_COMPILE=aarch64-linux-gnu- \ CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \ CROSS_COMPILE_ARM32=arm-linux-gnueabi-
            mv out/.config out/sweet_defconfig.txt
            
@@ -75,7 +73,7 @@ jobs:
     - name: Upload Kernel 
       uses: actions/upload-artifact@v4
       with:
-        name: Interstellar-MIUI-${{ env.BUILD_TIME }}
+        name: Strix-Interstellar-MIUI-${{ env.BUILD_TIME }}
         path: AnyKernel3/*
 
 
