@@ -17,7 +17,8 @@ jobs:
     - name: Install Dependencies
       run: |
           sudo apt update
-          sudo apt install -y build-essential libncurses-dev bison flex libssl-dev bc git
+          sudo apt install bc cpio flex bison aptitude git python-is-python3 tar perl wget curl lz4 -y
+          sudo aptitude install libssl-dev -y
 
     - name: Fetch android clang
       run: |  
@@ -38,8 +39,8 @@ jobs:
                  
     - name: AOSP Dimensi
       run: |
-            sed -i 's/qcom,mdss-pan-physical-width-dimension = <695>;$/qcom,mdss-pan-physical-width-dimension = <69>;/' arch/arm64/boot/dts/qcom/xiaomi/sweet/dsi-panel-k6-38-0c-0a-fhd-dsc-video.dtsi
-            sed -i 's/qcom,mdss-pan-physical-height-dimension = <1546>;$/qcom,mdss-pan-physical-height-dimension = <154>;/' arch/arm64/boot/dts/qcom/xiaomi/sweet/dsi-panel-k6-38-0c-0a-fhd-dsc-video.dtsi
+            sed -i 's/qcom,mdss-pan-physical-width-dimension = <695>;$/qcom,mdss-pan-physical-width-dimension = <69>;/' arch/arm64/boot/dts/qcom/dsi-panel-k6-38-0c-0a-fhd-dsc-video.dtsi
+            sed -i 's/qcom,mdss-pan-physical-height-dimension = <1546>;$/qcom,mdss-pan-physical-height-dimension = <154>;/' arch/arm64/boot/dts/qcom/dsi-panel-k6-38-0c-0a-fhd-dsc-video.dtsi
                           
     - name: Build Kernol
       run: |
@@ -48,7 +49,7 @@ jobs:
            export KBUILD_BUILD_USER=buildkernel1
            export KBUILD_BUILD_HOST=mhddonip
            export KBUILD_COMPILER_STRING="${PWD}/clang"
-           make O=out sweet_defconfig 
+           make O=out ARCH=arm64 vendor/sweet_defconfig  
            make -j$(nproc --all) O=out \ ARCH=arm64 \ LLVM=1 \ LLVM_IAS=1 \ CLANG_TRIPLE=aarch64-linux-gnu- \ CROSS_COMPILE=aarch64-linux-gnu- \ CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \ CROSS_COMPILE_ARM32=arm-linux-gnueabi-
            mv out/.config out/sweet_defconfig.txt
            
@@ -74,7 +75,7 @@ jobs:
     - name: Upload Kernel
       uses: actions/upload-artifact@v4
       with:
-        name: Interstellar-AOSP-${{ env.BUILD_TIME }}
+        name: Strix-Interstellar-AOSP-${{ env.BUILD_TIME }}
         path: AnyKernel3/*
 
 
