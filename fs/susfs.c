@@ -39,8 +39,7 @@ static DEFINE_HASHTABLE(FUSE_SUS_PATH_HLIST, 10);
 static int susfs_update_sus_path_inode(char *target_pathname, bool *out_is_fuse) {
 	struct path p;
 	struct inode *inode = NULL;
-	const char *dev_type;
-
+	
 	if (kern_path(target_pathname, LOOKUP_FOLLOW, &p)) {
 		SUSFS_LOGE("Failed opening file '%s'\n", target_pathname);
 		return 1;
