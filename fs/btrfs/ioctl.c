@@ -1695,15 +1695,6 @@ static noinline int btrfs_ioctl_snap_create_transid(struct file *file,
 			 * are limited to own subvolumes only
 			 */
 			ret = -EPERM;
-		} else if (btrfs_ino(BTRFS_I(src_inode)) != BTRFS_FIRST_FREE_OBJECTID) {
-			/*
-			 * Snapshots must be made with the src_inode referring
-			 * to the subvolume inode, otherwise the permission
-			 * checking above is useless because we may have
-			 * permission on a lower directory but not the subvol
-			 * itself.
-			 */
-			ret = -EINVAL;
 		} else {
 			ret = btrfs_mksubvol(&file->f_path, name, namelen,
 					     BTRFS_I(src_inode)->root,
@@ -1953,14 +1944,9 @@ static noinline int may_destroy_subvol(struct btrfs_root *root)
 	key.offset = (u64)-1;
 
 	ret = btrfs_search_slot(NULL, fs_info->tree_root, &key, path, 0, 0);
-	if (ret == 0) {
-		/*
-		 * Key with offset -1 found, there would have to exist a root
-		 * with such id, but this is out of valid range.
-		 */
-		ret = -EUCLEAN;
+	if (ret < 0)
 		goto out;
-	}
+	BUG_ON(ret == 0);
 
 	ret = 0;
 	if (path->slots[0] > 0) {
@@ -2643,7 +2629,7 @@ static int btrfs_ioctl_defrag(struct file *file, void __user *argp)
 {
 	struct inode *inode = file_inode(file);
 	struct btrfs_root *root = BTRFS_I(inode)->root;
-	struct btrfs_ioctl_defrag_range_args range = {0};
+	struct btrfs_ioctl_defrag_range_args *range;
 	int ret;
 
 	ret = mnt_want_write_file(file);
@@ -2669,28 +2655,33 @@ static int btrfs_ioctl_defrag(struct file *file, void __user *argp)
 			goto out;
 		}
 
+		range = kzalloc(sizeof(*range), GFP_KERNEL);
+		if (!range) {
+			ret = -ENOMEM;
+			goto out;
+		}
+
 		if (argp) {
-			if (copy_from_user(&range, argp, sizeof(range))) {
+			if (copy_from_user(range, argp,
+					   sizeof(*range))) {
 				ret = -EFAULT;
-				goto out;
-			}
-			if (range.flags & ~BTRFS_DEFRAG_RANGE_FLAGS_SUPP) {
-				ret = -EOPNOTSUPP;
+				kfree(range);
 				goto out;
 			}
 			/* compression requires us to start the IO */
-			if ((range.flags & BTRFS_DEFRAG_RANGE_COMPRESS)) {
-				range.flags |= BTRFS_DEFRAG_RANGE_START_IO;
-				range.extent_thresh = (u32)-1;
+			if ((range->flags & BTRFS_DEFRAG_RANGE_COMPRESS)) {
+				range->flags |= BTRFS_DEFRAG_RANGE_START_IO;
+				range->extent_thresh = (u32)-1;
 			}
 		} else {
 			/* the rest are all set to zero by kzalloc */
-			range.len = (u64)-1;
+			range->len = (u64)-1;
 		}
 		ret = btrfs_defrag_file(file_inode(file), file,
-					&range, BTRFS_OLDEST_GENERATION, 0);
+					range, 0, 0);
 		if (ret > 0)
 			ret = 0;
+		kfree(range);
 		break;
 	default:
 		ret = -EINVAL;

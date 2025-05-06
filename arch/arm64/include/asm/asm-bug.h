@@ -39,7 +39,6 @@
 	0:	.long 1f - 0b;				\
 _BUGVERBOSE_LOCATION(__FILE__, __LINE__)		\
 		.short flags; 				\
-		.align 2;				\
 		.popsection;				\
 	1:
 #else

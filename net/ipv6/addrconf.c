@@ -1715,8 +1715,7 @@ int ipv6_dev_get_saddr(struct net *net, const struct net_device *dst_dev,
 							    master, &dst,
 							    scores, hiscore_idx);
 
-			if (scores[hiscore_idx].ifa &&
-			    scores[hiscore_idx].scopedist >= 0)
+			if (scores[hiscore_idx].ifa)
 				goto out;
 		}
 
@@ -1914,10 +1913,9 @@ struct inet6_ifaddr *ipv6_get_ifaddr(struct net *net, const struct in6_addr *add
 		if (ipv6_addr_equal(&ifp->addr, addr)) {
 			if (!dev || ifp->idev->dev == dev ||
 			    !(ifp->scope&(IFA_LINK|IFA_HOST) || strict)) {
-				if (in6_ifa_hold_safe(ifp)) {
-					result = ifp;
-					break;
-				}
+				result = ifp;
+				in6_ifa_hold(ifp);
+				break;
 			}
 		}
 	}

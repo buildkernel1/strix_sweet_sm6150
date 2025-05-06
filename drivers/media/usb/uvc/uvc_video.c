@@ -167,13 +167,13 @@ static void uvc_fixup_video_ctrl(struct uvc_streaming *stream,
 		/* Compute a bandwidth estimation by multiplying the frame
 		 * size by the number of video frames per second, divide the
 		 * result by the number of USB frames (or micro-frames for
-		 * high- and super-speed devices) per second and add the UVC
-		 * header size (assumed to be 12 bytes long).
+		 * high-speed devices) per second and add the UVC header size
+		 * (assumed to be 12 bytes long).
 		 */
 		bandwidth = frame->wWidth * frame->wHeight / 8 * format->bpp;
 		bandwidth *= 10000000 / interval + 1;
 		bandwidth /= 1000;
-		if (stream->dev->udev->speed >= USB_SPEED_HIGH)
+		if (stream->dev->udev->speed == USB_SPEED_HIGH)
 			bandwidth /= 8;
 		bandwidth += 12;
 
@@ -408,12 +408,12 @@ static int uvc_commit_video(struct uvc_streaming *stream,
  * Clocks and timestamps
  */
 
-static inline ktime_t uvc_video_get_time(void)
+static inline void uvc_video_get_ts(struct timespec *ts)
 {
 	if (uvc_clock_param == CLOCK_MONOTONIC)
-		return ktime_get();
+		ktime_get_ts(ts);
 	else
-		return ktime_get_real();
+		ktime_get_real_ts(ts);
 }
 
 static void
@@ -425,10 +425,9 @@ uvc_video_clock_decode(struct uvc_streaming *stream, struct uvc_buffer *buf,
 	bool has_pts = false;
 	bool has_scr = false;
 	unsigned long flags;
-	ktime_t time;
+	struct timespec ts;
 	u16 host_sof;
 	u16 dev_sof;
-	u32 dev_stc;
 
 	switch (data[1] & (UVC_STREAM_PTS | UVC_STREAM_SCR)) {
 	case UVC_STREAM_PTS | UVC_STREAM_SCR:
@@ -473,38 +472,10 @@ uvc_video_clock_decode(struct uvc_streaming *stream, struct uvc_buffer *buf,
 	if (dev_sof == stream->clock.last_sof)
 		return;
 
-	dev_stc = get_unaligned_le32(&data[header_size - 6]);
-
-	/*
-	 * STC (Source Time Clock) is the clock used by the camera. The UVC 1.5
-	 * standard states that it "must be captured when the first video data
-	 * of a video frame is put on the USB bus". This is generally understood
-	 * as requiring devices to clear the payload header's SCR bit before
-	 * the first packet containing video data.
-	 *
-	 * Most vendors follow that interpretation, but some (namely SunplusIT
-	 * on some devices) always set the `UVC_STREAM_SCR` bit, fill the SCR
-	 * field with 0's,and expect that the driver only processes the SCR if
-	 * there is data in the packet.
-	 *
-	 * Ignore all the hardware timestamp information if we haven't received
-	 * any data for this frame yet, the packet contains no data, and both
-	 * STC and SOF are zero. This heuristics should be safe on compliant
-	 * devices. This should be safe with compliant devices, as in the very
-	 * unlikely case where a UVC 1.1 device would send timing information
-	 * only before the first packet containing data, and both STC and SOF
-	 * happen to be zero for a particular frame, we would only miss one
-	 * clock sample from many and the clock recovery algorithm wouldn't
-	 * suffer from this condition.
-	 */
-	if (buf && buf->bytesused == 0 && len == header_size &&
-	    dev_stc == 0 && dev_sof == 0)
-		return;
-
 	stream->clock.last_sof = dev_sof;
 
 	host_sof = usb_get_current_frame_number(stream->dev->udev);
-	time = uvc_video_get_time();
+	uvc_video_get_ts(&ts);
 
 	/* The UVC specification allows device implementations that can't obtain
 	 * the USB frame number to keep their own frame counters as long as they
@@ -538,10 +509,10 @@ uvc_video_clock_decode(struct uvc_streaming *stream, struct uvc_buffer *buf,
 	spin_lock_irqsave(&stream->clock.lock, flags);
 
 	sample = &stream->clock.samples[stream->clock.head];
-	sample->dev_stc = dev_stc;
+	sample->dev_stc = get_unaligned_le32(&data[header_size - 6]);
 	sample->dev_sof = dev_sof;
 	sample->host_sof = host_sof;
-	sample->host_time = time;
+	sample->host_ts = ts;
 
 	/* Update the sliding window head and count. */
 	stream->clock.head = (stream->clock.head + 1) % stream->clock.size;
@@ -681,13 +652,15 @@ void uvc_video_clock_update(struct uvc_streaming *stream,
 	struct uvc_clock_sample *first;
 	struct uvc_clock_sample *last;
 	unsigned long flags;
-	u64 timestamp;
+	struct timespec ts;
 	u32 delta_stc;
-	u32 y1;
+	u32 y1, y2;
 	u32 x1, x2;
 	u32 mean;
 	u32 sof;
-	u64 y, y2;
+	u32 div;
+	u32 rem;
+	u64 y;
 
 	if (!uvc_hw_timestamps_param)
 		return;
@@ -727,7 +700,7 @@ void uvc_video_clock_update(struct uvc_streaming *stream,
 	sof = y;
 
 	uvc_trace(UVC_TRACE_CLOCK, "%s: PTS %u y %llu.%06llu SOF %u.%06llu "
-		  "(x1 %u x2 %u y1 %u y2 %llu SOF offset %u)\n",
+		  "(x1 %u x2 %u y1 %u y2 %u SOF offset %u)\n",
 		  stream->dev->name, buf->pts,
 		  y >> 16, div_u64((y & 0xffff) * 1000000, 65536),
 		  sof >> 16, div_u64(((u64)sof & 0xffff) * 1000000LLU, 65536),
@@ -741,8 +714,9 @@ void uvc_video_clock_update(struct uvc_streaming *stream,
 	if (x1 == x2)
 		goto done;
 
+	ts = timespec_sub(last->host_ts, first->host_ts);
 	y1 = NSEC_PER_SEC;
-	y2 = ktime_to_ns(ktime_sub(last->host_time, first->host_time)) + y1;
+	y2 = (ts.tv_sec + 1) * NSEC_PER_SEC + ts.tv_nsec;
 
 	/* Interpolated and host SOF timestamps can wrap around at slightly
 	 * different times. Handle this by adding or removing 2048 to or from
@@ -759,18 +733,24 @@ void uvc_video_clock_update(struct uvc_streaming *stream,
 	  - (u64)y2 * (u64)x1;
 	y = div_u64(y, x2 - x1);
 
-	timestamp = ktime_to_ns(first->host_time) + y - y1;
+	div = div_u64_rem(y, NSEC_PER_SEC, &rem);
+	ts.tv_sec = first->host_ts.tv_sec - 1 + div;
+	ts.tv_nsec = first->host_ts.tv_nsec + rem;
+	if (ts.tv_nsec >= NSEC_PER_SEC) {
+		ts.tv_sec++;
+		ts.tv_nsec -= NSEC_PER_SEC;
+	}
 
 	uvc_trace(UVC_TRACE_CLOCK, "%s: SOF %u.%06llu y %llu ts %llu "
-		  "buf ts %llu (x1 %u/%u/%u x2 %u/%u/%u y1 %u y2 %llu)\n",
+		  "buf ts %llu (x1 %u/%u/%u x2 %u/%u/%u y1 %u y2 %u)\n",
 		  stream->dev->name,
 		  sof >> 16, div_u64(((u64)sof & 0xffff) * 1000000LLU, 65536),
-		  y, timestamp, vbuf->vb2_buf.timestamp,
+		  y, timespec_to_ns(&ts), vbuf->vb2_buf.timestamp,
 		  x1, first->host_sof, first->dev_sof,
 		  x2, last->host_sof, last->dev_sof, y1, y2);
 
 	/* Update the V4L2 buffer. */
-	vbuf->vb2_buf.timestamp = timestamp;
+	vbuf->vb2_buf.timestamp = timespec_to_ns(&ts);
 
 done:
 	spin_unlock_irqrestore(&clock->lock, flags);
@@ -1077,6 +1057,8 @@ static int uvc_video_decode_start(struct uvc_streaming *stream,
 	 * when the EOF bit is set to force synchronisation on the next packet.
 	 */
 	if (buf->state != UVC_BUF_STATE_ACTIVE) {
+		struct timespec ts;
+
 		if (fid == stream->last_fid) {
 			uvc_trace(UVC_TRACE_FRAME, "Dropping payload (out of "
 				"sync).\n");
@@ -1086,9 +1068,11 @@ static int uvc_video_decode_start(struct uvc_streaming *stream,
 			return -ENODATA;
 		}
 
+		uvc_video_get_ts(&ts);
+
 		buf->buf.field = V4L2_FIELD_NONE;
 		buf->buf.sequence = stream->sequence;
-		buf->buf.vb2_buf.timestamp = uvc_video_get_time();
+		buf->buf.vb2_buf.timestamp = timespec_to_ns(&ts);
 
 		/* TODO: Handle PTS and SCR. */
 		buf->state = UVC_BUF_STATE_ACTIVE;

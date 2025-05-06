@@ -127,7 +127,7 @@ static int nft_dynset_init(const struct nft_ctx *ctx,
 		u32 flags = ntohl(nla_get_be32(tb[NFTA_DYNSET_FLAGS]));
 
 		if (flags & ~NFT_DYNSET_F_INV)
-			return -EOPNOTSUPP;
+			return -EINVAL;
 		if (flags & NFT_DYNSET_F_INV)
 			priv->invert = true;
 	}
@@ -147,13 +147,21 @@ static int nft_dynset_init(const struct nft_ctx *ctx,
 		return -EBUSY;
 
 	priv->op = ntohl(nla_get_be32(tb[NFTA_DYNSET_OP]));
-	if (priv->op > NFT_DYNSET_OP_UPDATE)
+	switch (priv->op) {
+	case NFT_DYNSET_OP_ADD:
+		break;
+	case NFT_DYNSET_OP_UPDATE:
+		if (!(set->flags & NFT_SET_TIMEOUT))
+			return -EOPNOTSUPP;
+		break;
+	default:
 		return -EOPNOTSUPP;
+	}
 
 	timeout = 0;
 	if (tb[NFTA_DYNSET_TIMEOUT] != NULL) {
 		if (!(set->flags & NFT_SET_TIMEOUT))
-			return -EOPNOTSUPP;
+			return -EINVAL;
 		timeout = msecs_to_jiffies(be64_to_cpu(nla_get_be64(
 						tb[NFTA_DYNSET_TIMEOUT])));
 	}
@@ -165,7 +173,7 @@ static int nft_dynset_init(const struct nft_ctx *ctx,
 
 	if (tb[NFTA_DYNSET_SREG_DATA] != NULL) {
 		if (!(set->flags & NFT_SET_MAP))
-			return -EOPNOTSUPP;
+			return -EINVAL;
 		if (set->dtype == NFT_DATA_VERDICT)
 			return -EOPNOTSUPP;
 
@@ -179,7 +187,7 @@ static int nft_dynset_init(const struct nft_ctx *ctx,
 	if (tb[NFTA_DYNSET_EXPR] != NULL) {
 		if (!(set->flags & NFT_SET_EVAL))
 			return -EINVAL;
-		if (!nft_set_is_anonymous(set))
+		if (!(set->flags & NFT_SET_ANONYMOUS))
 			return -EOPNOTSUPP;
 
 		priv->expr = nft_expr_init(ctx, tb[NFTA_DYNSET_EXPR]);

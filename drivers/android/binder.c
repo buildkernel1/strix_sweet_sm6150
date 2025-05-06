@@ -540,7 +540,7 @@ struct binder_proc {
 	struct list_head todo;
 	struct binder_stats stats;
 	struct list_head delivered_death;
-	u32 max_threads;
+	int max_threads;
 	int requested_threads;
 	int requested_threads_started;
 	atomic_t tmp_ref;
@@ -870,18 +870,6 @@ binder_enqueue_thread_work_ilocked(struct binder_thread *thread,
 				   struct binder_work *work)
 {
 	binder_enqueue_work_ilocked(work, &thread->todo);
-
-
-	/* (e)poll-based threads require an explicit wakeup signal when
-	 * queuing their own work; they rely on these events to consume
-	 * messages without I/O block. Without it, threads risk waiting
-	 * indefinitely without handling the work.
-	 */
-	if (thread->looper & BINDER_LOOPER_STATE_POLL &&
-	    thread->pid == current->pid && !thread->process_todo)
-		wake_up_interruptible_sync(&thread->wait);
-
-
 	thread->process_todo = true;
 }
 
@@ -1024,7 +1012,9 @@ static bool binder_has_work(struct binder_thread *thread, bool do_proc_work)
 static bool binder_available_for_proc_work_ilocked(struct binder_thread *thread)
 {
 	return !thread->transaction_stack &&
-		binder_worklist_empty_ilocked(&thread->todo);
+		binder_worklist_empty_ilocked(&thread->todo) &&
+		(thread->looper & (BINDER_LOOPER_STATE_ENTERED |
+				   BINDER_LOOPER_STATE_REGISTERED));
 }
 
 static void binder_wakeup_poll_threads_ilocked(struct binder_proc *proc,
@@ -2919,17 +2909,27 @@ static int binder_proc_transaction(struct binder_transaction *t,
 		proc->async_recv |= oneway;
 	}
 
+	if ((proc->is_frozen && !oneway) || proc->is_dead ||
+			(thread && thread->is_dead)) {
+		bool proc_is_dead = proc->is_dead
+			|| (thread && thread->is_dead);
+		binder_inner_proc_unlock(proc);
+		binder_node_unlock(node);
+		return proc_is_dead ? BR_DEAD_REPLY : BR_FROZEN_REPLY;
+	}
 
 	if (!thread && !pending_async)
 		thread = binder_select_thread_ilocked(proc);
 
-	if (thread)
+	if (thread) {
+		binder_transaction_priority(thread->task, t, node_prio,
+					    node->inherit_rt);
 		binder_enqueue_thread_work_ilocked(thread, &t->work);
-	else if (!pending_async)
+	} else if (!pending_async) {
 		binder_enqueue_work_ilocked(&t->work, &proc->todo);
-	else
+	} else {
 		binder_enqueue_work_ilocked(&t->work, &node->async_todo);
-
+	}
 
 	if (!pending_async)
 		binder_wakeup_thread_ilocked(proc, thread, !oneway /* sync */);
@@ -3527,9 +3527,10 @@ static void binder_transaction(struct binder_proc *proc,
 			goto err_bad_object_type;
 		}
 	}
-
-	tcomplete->type = BINDER_WORK_TRANSACTION_COMPLETE;
-
+	if (t->buffer->oneway_spam_suspect)
+		tcomplete->type = BINDER_WORK_TRANSACTION_ONEWAY_SPAM_SUSPECT;
+	else
+		tcomplete->type = BINDER_WORK_TRANSACTION_COMPLETE;
 	t->work.type = BINDER_WORK_TRANSACTION;
 
 	if (reply) {
@@ -3543,7 +3544,7 @@ static void binder_transaction(struct binder_proc *proc,
 		BUG_ON(t->buffer->async_transaction != 0);
 		binder_pop_transaction_ilocked(target_thread, in_reply_to);
 		binder_enqueue_thread_work_ilocked(target_thread, &t->work);
-
+		target_proc->outstanding_txns++;
 		binder_inner_proc_unlock(target_proc);
 		wake_up_interruptible_sync(&target_thread->wait);
 		binder_restore_priority(current, in_reply_to->saved_priority);
@@ -3575,9 +3576,8 @@ static void binder_transaction(struct binder_proc *proc,
 		BUG_ON(target_node == NULL);
 		BUG_ON(t->buffer->async_transaction != 1);
 		binder_enqueue_thread_work(thread, tcomplete);
-
-		if (!binder_proc_transaction(t, target_proc, NULL))
-
+		return_error = binder_proc_transaction(t, target_proc, NULL);
+		if (return_error)
 			goto err_dead_proc_or_thread;
 	}
 	if (target_thread)
@@ -5139,7 +5139,7 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			goto err;
 		break;
 	case BINDER_SET_MAX_THREADS: {
-		u32 max_threads;
+		int max_threads;
 
 		if (copy_from_user(&max_threads, ubuf,
 				   sizeof(max_threads))) {
