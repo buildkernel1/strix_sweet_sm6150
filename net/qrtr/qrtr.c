@@ -20,6 +20,7 @@
 #include <linux/rwsem.h>
 #include <linux/ipc_logging.h>
 #include <linux/uidgid.h>
+#include <linux/pm_wakeup.h>
 
 #include <net/sock.h>
 #include <uapi/linux/sched/types.h>
@@ -160,6 +161,7 @@ static struct work_struct qrtr_backup_work;
  * @task: task to run the worker thread
  * @read_data: scheduled work for recv work
  * @say_hello: scheduled work for initiating hello
+ * @ws: wakeupsource avoid system suspend
  * @ilc: ipc logging context reference
  */
 struct qrtr_node {
@@ -182,6 +184,8 @@ struct qrtr_node {
 	struct task_struct *task;
 	struct kthread_work read_data;
 	struct kthread_work say_hello;
+
+	struct wakeup_source *ws;
 
 	void *ilc;
 };
@@ -372,6 +376,7 @@ static void __qrtr_node_release(struct kref *kref)
 	}
 	mutex_unlock(&node->qrtr_tx_lock);
 
+	wakeup_source_unregister(node->ws);
 	kthread_flush_worker(&node->kworker);
 	kthread_stop(node->task);
 
@@ -644,10 +649,16 @@ static void qrtr_node_assign(struct qrtr_node *node, unsigned int nid)
 		node->nid = nid;
 	up_write(&qrtr_node_lock);
 
+	snprintf(name, sizeof(name), "qrtr_%d", nid);
 	if (!node->ilc) {
-		snprintf(name, sizeof(name), "qrtr_%d", nid);
 		node->ilc = ipc_log_context_create(QRTR_LOG_PAGE_CNT, name, 0);
 	}
+	/* create wakeup source for only  NID = 0.
+	 * From other nodes sensor service stream samples
+	 * cause APPS suspend problems and power drain issue.
+	 */
+	if (!node->ws && nid == 0)
+		node->ws = wakeup_source_register(NULL, name);
 }
 
 /**
@@ -829,6 +840,8 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 	if (cb->dst_port != QRTR_PORT_CTRL && cb->type != QRTR_TYPE_DATA &&
 	    cb->type != QRTR_TYPE_RESUME_TX)
 		goto err;
+
+	__pm_wakeup_event(node->ws, 0);
 
 	skb->data_len = size;
 	skb->len = size;
@@ -1526,12 +1539,11 @@ static int qrtr_bcast_enqueue(struct qrtr_node *node, struct sk_buff *skb,
 			      struct sockaddr_qrtr *to, unsigned int flags)
 {
 	struct sk_buff *skbn;
-
-
-	mutex_lock(&qrtr_node_lock);
-	list_for_each_entry(node, &qrtr_all_nodes, item) {
-		skbn = pskb_copy(skb, GFP_KERNEL);
-
+	down_read(&qrtr_node_lock);
+	list_for_each_entry(node, &qrtr_all_epts, item) {
+		if (node->nid == QRTR_EP_NID_AUTO && type != QRTR_TYPE_HELLO)
+			continue;
+		skbn = skb_clone(skb, GFP_KERNEL);
 		if (!skbn)
 			break;
 		skb_set_owner_w(skbn, skb->sk);

@@ -2168,7 +2168,6 @@ static int bpf_skb_proto_4_to_6(struct sk_buff *skb)
 			shinfo->gso_type |=  SKB_GSO_TCPV6;
 		}
 
-
 		/* Due to IPv6 header, MSS needs to be downgraded. */
 		skb_decrease_gso_size(shinfo, len_diff);
 
@@ -2211,7 +2210,6 @@ static int bpf_skb_proto_6_to_4(struct sk_buff *skb)
 			shinfo->gso_type &= ~SKB_GSO_TCPV6;
 			shinfo->gso_type |=  SKB_GSO_TCPV4;
 		}
-
 
 		/* Due to IPv4 header, MSS can be upgraded. */
 		skb_increase_gso_size(shinfo, len_diff);
@@ -3903,6 +3901,7 @@ static bool sock_addr_is_valid_access(int off, int size,
 		case BPF_CGROUP_INET4_BIND:
 		case BPF_CGROUP_INET4_CONNECT:
 		case BPF_CGROUP_UDP4_SENDMSG:
+		case BPF_CGROUP_UDP4_RECVMSG:
 			break;
 		default:
 			return false;
@@ -3913,6 +3912,7 @@ static bool sock_addr_is_valid_access(int off, int size,
 		case BPF_CGROUP_INET6_BIND:
 		case BPF_CGROUP_INET6_CONNECT:
 		case BPF_CGROUP_UDP6_SENDMSG:
+		case BPF_CGROUP_UDP6_RECVMSG:
 			break;
 		default:
 			return false;
@@ -4865,6 +4865,35 @@ const struct bpf_verifier_ops sk_skb_prog_ops = {
 	.convert_ctx_access	= sk_skb_convert_ctx_access,
 	.gen_prologue		= sk_skb_prologue,
 };
+
+#ifdef CONFIG_ANDROID_SPOOF_KERNEL_VERSION_FOR_BPF
+static const struct bpf_func_proto *
+dummy_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+{
+	return bpf_base_func_proto(func_id);
+}
+
+static bool dummy_is_valid_access(int off, int size,
+				  enum bpf_access_type type,
+				  const struct bpf_prog *prog,
+				  struct bpf_insn_access_aux *info)
+{
+	return true;
+}
+
+static int dummy_prologue(struct bpf_insn *insn_buf, bool direct_write,
+			  const struct bpf_prog *prog)
+{
+	return bpf_unclone_prologue(insn_buf, direct_write, prog, SK_DROP);
+}
+
+const struct bpf_verifier_ops dummy_prog_ops = {
+	.get_func_proto		= dummy_func_proto,
+	.is_valid_access	= dummy_is_valid_access,
+	.convert_ctx_access	= bpf_convert_ctx_access,
+	.gen_prologue		= dummy_prologue,
+};
+#endif
 
 int sk_detach_filter(struct sock *sk)
 {
